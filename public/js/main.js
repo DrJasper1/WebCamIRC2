@@ -180,15 +180,59 @@ async function initializeMediaStream() {
             // Create a stream from the canvas
             const stream = canvas.captureStream(30);
             
-            // Create silent audio track if needed
-            if (error.message.includes('in use')) {
+            // Create audio track for testing
+            try {
+                // First try to get just audio, as this might work even if video is in use
+                const audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: true,
+                    video: false
+                });
+                
+                // Add the real audio track to our canvas stream
+                const audioTrack = audioStream.getAudioTracks()[0];
+                stream.addTrack(audioTrack);
+                
+                logEvent('MEDIA', 'Using real audio with fallback video');
+            } catch (audioError) {
+                // If we can't get real audio, create a synthetic tone
+                logEvent('MEDIA', 'Could not access microphone, using synthetic audio', audioError.message);
+                
                 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 const oscillator = audioCtx.createOscillator();
-                const dst = oscillator.connect(audioCtx.createMediaStreamDestination());
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); // A4 note
+                
+                // Add gain to control volume and make it very quiet by default
+                const gainNode = audioCtx.createGain();
+                gainNode.gain.value = 0.01; // Very quiet
+                
+                oscillator.connect(gainNode);
+                const dst = gainNode.connect(audioCtx.createMediaStreamDestination());
                 oscillator.start();
+                
                 const audioTrack = dst.stream.getAudioTracks()[0];
-                audioTrack.enabled = false; // Mute it
                 stream.addTrack(audioTrack);
+                
+                // Add UI control to test audio
+                const testAudioBtn = document.createElement('button');
+                testAudioBtn.textContent = 'Test Audio Tone';
+                testAudioBtn.style.position = 'absolute';
+                testAudioBtn.style.bottom = '10px';
+                testAudioBtn.style.left = '10px';
+                testAudioBtn.style.zIndex = '10';
+                localVideo.parentElement.appendChild(testAudioBtn);
+                
+                testAudioBtn.addEventListener('mousedown', () => {
+                    gainNode.gain.value = 0.2; // Louder when pressed
+                });
+                
+                testAudioBtn.addEventListener('mouseup', () => {
+                    gainNode.gain.value = 0.01; // Back to quiet
+                });
+                
+                testAudioBtn.addEventListener('mouseleave', () => {
+                    gainNode.gain.value = 0.01; // Back to quiet
+                });
             }
             
             localStream = stream;
@@ -212,6 +256,13 @@ async function initializeMediaStream() {
 
 function setupAudioAnalyzer(stream) {
     try {
+        // Check if stream has audio tracks before setting up analyzer
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            logEvent('MEDIA', 'No audio tracks available for analysis');
+            return;
+        }
+        
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         const source = audioContext.createMediaStreamSource(stream);
         audioAnalyser = audioContext.createAnalyser();
@@ -543,6 +594,8 @@ function toggleAudioMute() {
                 
             logEvent('MEDIA', `Audio ${isAudioMuted ? 'muted' : 'unmuted'}`);
             updateMediaDebugInfo();
+        } else {
+            alert('No audio track available to mute/unmute');
         }
     }
 }
