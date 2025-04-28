@@ -967,6 +967,7 @@ function endCurrentChat() {
 
 // Reset connection and UI
 function resetConnection() {
+    console.error(">>> RESET CONNECTION CALLED <<<"); // Add noticeable log
     console.trace('resetConnection called'); // Add trace
     logEvent('CONNECTION', 'Connection reset');
     
@@ -994,8 +995,6 @@ function resetConnection() {
     muteVideoBtn.disabled = true;
     
     roomInfoElem.textContent = '';
-    
-    logEvent('CONNECTION', 'Connection reset');
 }
 
 // Update UI for waiting state
