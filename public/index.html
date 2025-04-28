@@ -50,13 +50,23 @@
         <div class="debug-panel">
             <h3>Debug Panel <button id="toggleDebugBtn" class="small-btn">Toggle</button></h3>
             <div id="debugContent">
-                <div class="debug-tabs">
-                    <button class="debug-tab active" data-tab="connection">Connection</button>
-                    <button class="debug-tab" data-tab="webrtc">WebRTC</button>
-                    <button class="debug-tab" data-tab="media">Media</button>
-                </div>
                 <div class="debug-body">
-                    <div id="connectionDebug" class="debug-section active">
+                    <div id="audioVisualizer" class="debug-section">
+                        <h4>Audio Visualizer</h4>
+                        <div class="visualizer-container">
+                            <div class="visualizer-label">Local Audio:</div>
+                            <canvas id="localAudioVisualizer" width="600" height="60"></canvas>
+                            <div class="visualizer-label">Remote Audio:</div>
+                            <canvas id="remoteAudioVisualizer" width="600" height="60"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div id="microphoneInfo" class="debug-section">
+                        <h4>Microphone Information</h4>
+                        <div id="microphoneDetails">No microphone detected yet...</div>
+                    </div>
+                    
+                    <div id="connectionSection" class="debug-section">
                         <h4>Connection Status</h4>
                         <div id="connectionStatus">Not connected</div>
                         <h4>Room Information</h4>
@@ -64,7 +74,10 @@
                         <h4>Active Connections</h4>
                         <div id="connectionsDebug"></div>
                     </div>
-                    <div id="webrtcDebug" class="debug-section">
+                    
+                    <div id="webrtcSection" class="debug-section">
+                        <h4>WebRTC Status</h4>
+                        <div id="webrtcStatus"></div>
                         <h4>WebRTC Events</h4>
                         <div id="webrtcEvents"></div>
                         <h4>ICE Candidates</h4>
@@ -72,15 +85,15 @@
                         <h4>Signaling</h4>
                         <div id="signalingDebug"></div>
                     </div>
-                    <div id="mediaDebug" class="debug-section">
+                    
+                    <div id="mediaSection" class="debug-section">
                         <h4>Media Status</h4>
                         <div id="mediaStatus"></div>
                         <h4>Media Capabilities</h4>
                         <div id="mediaCapabilities"></div>
-                        <h4>Audio Levels</h4>
-                        <div id="audioLevels"></div>
                     </div>
                 </div>
+                
                 <div class="debug-log">
                     <h4>Event Log <button id="clearLogBtn" class="small-btn">Clear</button></h4>
                     <div id="eventLog"></div>

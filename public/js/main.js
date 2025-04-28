@@ -10,19 +10,25 @@ const joinRoomBtn = document.getElementById('joinRoomBtn');
 const roomInfoElem = document.getElementById('roomInfo');
 const toggleDebugBtn = document.getElementById('toggleDebugBtn');
 const clearLogBtn = document.getElementById('clearLogBtn');
-const debugTabs = document.querySelectorAll('.debug-tab');
 
 // Debug Elements
 const connectionStatus = document.getElementById('connectionStatus');
 const roomsDebug = document.getElementById('roomsDebug');
 const connectionsDebug = document.getElementById('connectionsDebug');
 const webrtcEvents = document.getElementById('webrtcEvents');
+const webrtcStatus = document.getElementById('webrtcStatus');
 const iceDebug = document.getElementById('iceDebug');
 const signalingDebug = document.getElementById('signalingDebug');
 const mediaStatus = document.getElementById('mediaStatus');
 const mediaCapabilities = document.getElementById('mediaCapabilities');
-const audioLevels = document.getElementById('audioLevels');
+const microphoneDetails = document.getElementById('microphoneDetails');
 const eventLog = document.getElementById('eventLog');
+
+// Visualizer Elements
+const localAudioCanvas = document.getElementById('localAudioVisualizer');
+const remoteAudioCanvas = document.getElementById('remoteAudioVisualizer');
+const localAudioCtx = localAudioCanvas.getContext('2d');
+const remoteAudioCtx = remoteAudioCanvas.getContext('2d');
 
 // Connect to socket.io server
 const socket = io();
@@ -87,6 +93,12 @@ function updateSpecificDebugPanel(category, message, data) {
     switch(category) {
         case 'WEBRTC':
             appendToElement(webrtcEvents, message, data);
+            // Also update WebRTC status summary
+            if (data && (message.includes('state changed') || message.includes('connection'))) {
+                webrtcStatus.innerHTML = `<div class="status-indicator ${data === 'connected' ? 'success' : (data === 'failed' ? 'error' : 'pending')}">
+                    ${message}: <strong>${data}</strong> - ${new Date().toLocaleTimeString()}
+                </div>`;
+            }
             break;
         case 'ICE':
             appendToElement(iceDebug, message, data);
@@ -98,9 +110,65 @@ function updateSpecificDebugPanel(category, message, data) {
             appendToElement(mediaStatus, message, data);
             break;
         case 'CONNECTION':
-            appendToElement(connectionStatus, message, data);
+            // For connection status, replace content instead of append
+            if (message.includes('Connected to signaling server')) {
+                connectionStatus.innerHTML = `<div class="status-indicator success">${message}</div>`;
+            } else if (message.includes('Disconnected')) {
+                connectionStatus.innerHTML = `<div class="status-indicator error">${message}</div>`;
+            } else {
+                appendToElement(connectionStatus, message, data);
+            }
+            break;
+        case 'MICROPHONE':
+            // For microphone information, we want to display it prominently
+            updateMicrophoneInfo(message, data);
             break;
     }
+}
+
+function updateMicrophoneInfo(message, data) {
+    // Create nicely formatted microphone info
+    const micInfo = document.createElement('div');
+    micInfo.className = 'mic-info';
+    
+    if (data && data.label) {
+        micInfo.innerHTML = `
+            <div class="mic-status success">
+                <h5>🎤 Microphone Detected</h5>
+                <div><strong>Name:</strong> ${data.label}</div>
+                <div><strong>ID:</strong> ${data.id || 'Unknown'}</div>
+                <div><strong>State:</strong> ${data.enabled ? 'Enabled' : 'Disabled'}</div>
+                <div><strong>Muted:</strong> ${data.muted ? 'Yes' : 'No'}</div>
+                <div><strong>Last Updated:</strong> ${new Date().toLocaleTimeString()}</div>
+            </div>
+        `;
+        
+        // If we have constraints or settings, add them
+        if (data.settings) {
+            const settingsHtml = Object.entries(data.settings)
+                .map(([key, value]) => `<div><strong>${key}:</strong> ${value}</div>`)
+                .join('');
+                
+            micInfo.innerHTML += `
+                <details>
+                    <summary>Microphone Settings</summary>
+                    <div class="mic-details">${settingsHtml}</div>
+                </details>
+            `;
+        }
+    } else {
+        micInfo.innerHTML = `
+            <div class="mic-status warning">
+                <h5>⚠️ Microphone Issue</h5>
+                <div>${message || 'No microphone detected or access denied'}</div>
+                <div><strong>Last Checked:</strong> ${new Date().toLocaleTimeString()}</div>
+            </div>
+        `;
+    }
+    
+    // Replace current microphone info
+    microphoneDetails.innerHTML = '';
+    microphoneDetails.appendChild(micInfo);
 }
 
 function appendToElement(element, message, data = null) {
@@ -147,8 +215,8 @@ async function initializeMediaStream() {
         logEvent('MEDIA', 'Local media stream initialized successfully');
         updateMediaDebugInfo();
         
-        // Setup audio analyzer for audio levels
-        setupAudioAnalyzer(stream);
+        // Setup audio analyzer and visualizer
+        setupAudioVisualizer(stream, 'local');
         
         return true;
     } catch (error) {
@@ -277,58 +345,141 @@ async function initializeMediaStream() {
     }
 }
 
-function setupAudioAnalyzer(stream) {
+function setupAudioVisualizer(stream, type = 'local') {
     try {
         // Check if stream has audio tracks before setting up analyzer
         const audioTracks = stream.getAudioTracks();
-        if (audioTracks.length === 0) {
-            logEvent('MEDIA', 'No audio tracks available for analysis');
+        
+        if (audioTracks.length > 0) {
+            // If we found audio tracks, log detailed information about the microphone
+            const audioTrack = audioTracks[0];
+            logEvent('MICROPHONE', `${type.toUpperCase()} Microphone detected`, {
+                id: audioTrack.id,
+                label: audioTrack.label,
+                enabled: audioTrack.enabled,
+                muted: audioTrack.muted,
+                settings: audioTrack.getSettings ? audioTrack.getSettings() : 'Not available',
+                readyState: audioTrack.readyState
+            });
+        } else {
+            logEvent('MICROPHONE', `No ${type} microphone available`, { streamHasAudio: false });
             return;
         }
         
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const source = audioContext.createMediaStreamSource(stream);
-        audioAnalyser = audioContext.createAnalyser();
-        audioAnalyser.fftSize = 256;
-        source.connect(audioAnalyser);
+        // Set up audio context and analyzer
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024; // Larger FFT size for more detailed visualization
         
-        // Start monitoring audio levels
-        monitorAudioLevels();
+        const source = ctx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        
+        // Create data array for visualization
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        
+        // Select the right canvas for visualization
+        const canvas = type === 'local' ? localAudioCanvas : remoteAudioCanvas;
+        const canvasCtx = canvas.getContext('2d');
+        
+        // Variables for the visualizer
+        const WIDTH = canvas.width;
+        const HEIGHT = canvas.height;
+        let animationId;
+        
+        // Function to draw the visualization
+        function draw() {
+            animationId = requestAnimationFrame(draw);
+            
+            // Get frequency data
+            analyser.getByteFrequencyData(dataArray);
+            
+            // Clear canvas
+            canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
+            canvasCtx.fillStyle = '#f0f0f0';
+            canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
+            
+            // Draw frequency bars
+            const barWidth = (WIDTH / bufferLength) * 2.5;
+            let barHeight;
+            let x = 0;
+            
+            // Calculate overall volume for display
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / bufferLength;
+            const volume = Math.min(100, Math.round((average / 256) * 100));
+            
+            // Draw volume indicator text
+            canvasCtx.fillStyle = volume > 5 ? '#4CAF50' : '#999';
+            canvasCtx.font = '12px Arial';
+            canvasCtx.fillText(`Volume: ${volume}%`, 10, 20);
+            
+            // Draw activity indicator
+            const indicatorSize = 10;
+            canvasCtx.beginPath();
+            canvasCtx.arc(WIDTH - 20, 15, indicatorSize, 0, Math.PI * 2);
+            canvasCtx.fillStyle = volume > 5 ? '#4CAF50' : '#999';
+            canvasCtx.fill();
+            
+            // Only draw bars if there's some audio activity
+            if (volume > 2) {
+                for (let i = 0; i < bufferLength; i++) {
+                    barHeight = dataArray[i] / 2;
+                    
+                    // Use a gradient color based on frequency
+                    const hue = (i / bufferLength) * 180 + 180; // 180-360 range (cyan to blue)
+                    canvasCtx.fillStyle = `hsl(${hue}, 70%, 60%)`;
+                    canvasCtx.fillRect(x, HEIGHT - barHeight, barWidth, barHeight);
+                    
+                    x += barWidth + 1;
+                    if (x > WIDTH) break;
+                }
+            }
+            
+            // Update debug display
+            if (type === 'local' && volume > 5) {
+                // Update microphone status to show it's active
+                const micInfo = microphoneDetails.querySelector('.mic-status');
+                if (micInfo && micInfo.classList.contains('warning')) {
+                    micInfo.classList.remove('warning');
+                    micInfo.classList.add('success');
+                    micInfo.querySelector('h5').innerHTML = '🎤 Microphone Active';
+                }
+            }
+        }
+        
+        // Start the visualization
+        draw();
+        
+        // Store context and animation ID for cleanup
+        if (type === 'local') {
+            window._localAudioContext = { ctx, animationId };
+        } else {
+            window._remoteAudioContext = { ctx, animationId };
+        }
+        
+        return { ctx, analyser };
     } catch (error) {
-        logEvent('ERROR', 'Failed to setup audio analyzer', error.message);
+        logEvent('ERROR', `Failed to setup ${type} audio visualizer`, error.message);
+        
+        // Draw error message on canvas
+        const canvas = type === 'local' ? localAudioCanvas : remoteAudioCanvas;
+        const canvasCtx = canvas.getContext('2d');
+        canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+        canvasCtx.fillStyle = '#f8d7da';
+        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+        canvasCtx.fillStyle = '#721c24';
+        canvasCtx.font = '12px Arial';
+        canvasCtx.fillText(`Error: ${error.message}`, 10, 30);
+        
+        return null;
     }
 }
 
-function monitorAudioLevels() {
-    if (!audioAnalyser) return;
-    
-    const bufferLength = audioAnalyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    
-    function updateAudioLevel() {
-        if (!audioAnalyser) return;
-        
-        audioAnalyser.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
-            sum += dataArray[i];
-        }
-        const average = sum / bufferLength;
-        const level = Math.min(100, Math.round((average / 256) * 100));
-        
-        // Update audio level display
-        audioLevels.innerHTML = `
-            <div>Current Level: ${level}%</div>
-            <div class="audio-meter">
-                <div class="audio-meter-bar" style="width: ${level}%"></div>
-            </div>
-        `;
-        
-        requestAnimationFrame(updateAudioLevel);
-    }
-    
-    updateAudioLevel();
-}
+// We've replaced monitorAudioLevels with the more comprehensive setupAudioVisualizer
 
 function updateMediaDebugInfo() {
     if (!localStream) return;
@@ -534,9 +685,9 @@ function createPeerConnection() {
                 id: remoteStream.id
             });
             
-            // Add volume meter for incoming audio
+            // Add audio visualizer for remote stream
             if (remoteStream.getAudioTracks().length > 0) {
-                setupRemoteAudioMeter(remoteStream);
+                setupAudioVisualizer(remoteStream, 'remote');
             }
         }
     };
@@ -572,48 +723,7 @@ function checkRemoteAudio() {
     }
 }
 
-// Setup audio meter for remote audio
-function setupRemoteAudioMeter(stream) {
-    try {
-        const remoteAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const source = remoteAudioCtx.createMediaStreamSource(stream);
-        const analyser = remoteAudioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        source.connect(analyser);
-        
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        
-        const meterElem = document.createElement('div');
-        meterElem.className = 'remote-audio-meter';
-        meterElem.style.cssText = 'position:absolute; bottom:40px; right:10px; background:rgba(0,0,0,0.5); color:white; padding:5px; border-radius:5px; z-index:100; width:150px;';
-        remoteVideo.parentElement.appendChild(meterElem);
-        
-        function updateMeter() {
-            analyser.getByteFrequencyData(dataArray);
-            let sum = 0;
-            for (let i = 0; i < bufferLength; i++) {
-                sum += dataArray[i];
-            }
-            const average = sum / bufferLength;
-            const level = Math.min(100, Math.round((average / 256) * 100));
-            
-            meterElem.innerHTML = `
-                <div>Remote Audio: ${level}%</div>
-                <div style="background:#333; height:10px; width:100%; border-radius:5px; overflow:hidden;">
-                    <div style="background:#4CAF50; height:100%; width:${level}%;"></div>
-                </div>
-            `;
-            
-            requestAnimationFrame(updateMeter);
-        }
-        
-        updateMeter();
-        
-    } catch (error) {
-        logEvent('ERROR', 'Failed to setup remote audio meter', error.message);
-    }
-}
+// This function has been replaced by the more comprehensive setupAudioVisualizer
 
 // Handle incoming WebRTC signals
 async function handleSignal(data) {
@@ -959,25 +1069,7 @@ clearLogBtn.addEventListener('click', () => {
     eventLog.innerHTML = '';
 });
 
-// Debug tabs
-debugTabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-        // Remove active class from all tabs
-        debugTabs.forEach(t => t.classList.remove('active'));
-        
-        // Add active class to clicked tab
-        tab.classList.add('active');
-        
-        // Hide all sections
-        document.querySelectorAll('.debug-section').forEach(section => {
-            section.classList.remove('active');
-        });
-        
-        // Show selected section
-        const tabName = tab.getAttribute('data-tab');
-        document.getElementById(`${tabName}Debug`).classList.add('active');
-    });
-});
+// Debug panel is now always visible, no need for tab switching code
 
 // Initialize the application
 (async function init() {
