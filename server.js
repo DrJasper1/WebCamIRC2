@@ -191,6 +191,10 @@ io.on('connection', (socket) => {
         console.log('Reason: ', socket.disconnected);
         console.log('Was the socket closed by the client?', socket.client.conn.readyState === 3);
         console.log('Was the socket closed by the server?', socket.client.conn.readyState === 4);
+        
+        // Remove user from connections map
+        connections.delete(socket.id);
+        
         updateDebugInfo();
     });
 
