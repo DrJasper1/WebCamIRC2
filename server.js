@@ -14,6 +14,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Debug info
 let connections = new Map();
 let roomsInfo = new Map();
+let waitingUsers = new Set();
 
 // Connection handling
 io.on('connection', (socket) => {
@@ -35,53 +36,58 @@ io.on('connection', (socket) => {
     
     // Looking for random chat partner
     socket.on('findPartner', () => {
-        console.log(`User ${socket.id} looking for partner`);
-        
-        // Check if user is already in a room
-        if (connections.get(socket.id).room) {
-            socket.emit('debug', { message: 'Already in a room', roomId: connections.get(socket.id).room });
-            return;
+        console.log(`[Server] User ${socket.id} is looking for a partner.`);
+        console.log(`[Server] waitingUsers before add: [${Array.from(waitingUsers)}]`);
+
+        if (waitingUsers.has(socket.id)) {
+            console.log(`[Server] User ${socket.id} is already waiting.`);
+            return; // Already waiting
         }
-        
-        // Find another user waiting for a match
-        const waitingSockets = Array.from(connections.entries())
-            .filter(([id, info]) => !info.room && id !== socket.id);
-        
-        if (waitingSockets.length > 0) {
-            // Match with the first waiting user
-            const partnerId = waitingSockets[0][0];
+
+        waitingUsers.add(socket.id);
+        console.log(`[Server] User ${socket.id} added to waiting list.`);
+        console.log(`[Server] waitingUsers after add: [${Array.from(waitingUsers)}]`);
+
+        if (waitingUsers.size >= 2) {
+            console.log('[Server] Found potential pair!');
+            // Find two users
+            let partner1Id = null;
+            let partner2Id = null;
+            const users = Array.from(waitingUsers);
+            partner1Id = users[0];
+            partner2Id = users[1];
+
+            // Remove them from waiting list
+            waitingUsers.delete(partner1Id);
+            waitingUsers.delete(partner2Id);
+            console.log(`[Server] Removed ${partner1Id} and ${partner2Id} from waiting list.`);
+            console.log(`[Server] waitingUsers after removal: [${Array.from(waitingUsers)}]`);
+
+            // Create a room ID
             const roomId = uuidv4();
-            
-            // Join both users to the room
-            socket.join(roomId);
-            io.sockets.sockets.get(partnerId).join(roomId);
-            
-            // Update connection info
-            connections.get(socket.id).room = roomId;
-            connections.get(partnerId).room = roomId;
-            
-            // Create room info
-            roomsInfo.set(roomId, {
-                id: roomId,
-                users: [socket.id, partnerId],
-                createdAt: new Date().toISOString()
-            });
-            
+            console.log(`[Server] Creating room: ${roomId}`);
+
             // Notify both users
-            io.to(roomId).emit('chatStart', { roomId });
-            io.to(roomId).emit('debug', { 
-                message: 'Chat started', 
-                roomId,
-                users: [socket.id, partnerId]
-            });
+            if (io.sockets.sockets.get(partner1Id)) {
+                io.sockets.sockets.get(partner1Id).emit('partnerFound', { roomId: roomId, initiator: true });
+                console.log(`[Server] Emitted 'partnerFound' (initiator) to ${partner1Id} for room ${roomId}`);
+            } else {
+                console.error(`[Server] Error: Could not find socket for partner1Id: ${partner1Id}`);
+            }
             
-            console.log(`Match created: ${socket.id} with ${partnerId} in room ${roomId}`);
+            if (io.sockets.sockets.get(partner2Id)) {
+                io.sockets.sockets.get(partner2Id).emit('partnerFound', { roomId: roomId, initiator: false });
+                console.log(`[Server] Emitted 'partnerFound' (non-initiator) to ${partner2Id} for room ${roomId}`);
+            } else {
+                 console.error(`[Server] Error: Could not find socket for partner2Id: ${partner2Id}`);
+            }
+
+            // Store room info (optional, for debug or other features)
+            roomsInfo.set(roomId, { users: [partner1Id, partner2Id] });
+            updateDebugInfo(); // Update debug info after pairing
         } else {
-            socket.emit('waiting');
-            socket.emit('debug', { message: 'Waiting for partner' });
+            console.log(`[Server] Not enough users waiting (${waitingUsers.size}). User ${socket.id} must wait.`);
         }
-        
-        updateDebugInfo();
     });
 
     // Handle WebRTC signaling
