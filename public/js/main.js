@@ -950,8 +950,8 @@ async function joinSpecificRoom() {
     joinRoomBtn.disabled = true;
     
     // Join the specific room
-    socket.emit('joinSpecificRoom', roomId);
-    logEvent('CONNECTION', `Joining specific room: ${roomId}`);
+    socket.emit('joinRoom', roomId);
+    logEvent('CONNECTION', `Joining room: ${roomId}`);
     
     updateUIForWaiting();
 }
@@ -1053,87 +1053,53 @@ function toggleVideoMute() {
 
 // Socket.io event handlers
 socket.on('connect', () => {
-    logEvent('CONNECTION', 'Connected to signaling server', { socketId: socket.id });
-    connectionStatus.textContent = `Connected to server with ID: ${socket.id}`;
+    logEvent('SYSTEM', 'Connected to signaling server');
+    console.log('Connected to signaling server');
 });
 
-socket.on('disconnect', () => {
-    logEvent('CONNECTION', 'Disconnected from signaling server');
-    connectionStatus.textContent = 'Disconnected from server';
-    resetConnection();
+socket.on('connected', (data) => {
+    logEvent('SYSTEM', 'Socket connected', data);
 });
 
-socket.on('waiting', () => {
-    logEvent('CONNECTION', 'Waiting for a partner');
+socket.on('all_users', users => {
+    logEvent('SYSTEM', 'All users in room', users);
 });
 
-socket.on('chatStart', async (data) => {
-    logEvent('CONNECTION', 'Chat started', data);
-    updateUIForConnected(data.roomId);
-    
-    // Create peer connection if not exists
-    if (!peerConnection) {
-        createPeerConnection();
-    }
-    
-    // If we are the initiator, create and send an offer
-    if (socket.id === data.users?.[0]) {
-        logEvent('WEBRTC', 'Creating offer');
-        peerConnection.createOffer()
-            .then(offer => {
-                logEvent('WEBRTC', 'Offer created', { sdp: offer.sdp });
-                return peerConnection.setLocalDescription(offer);
-            })
-            .then(() => {
-                logEvent('WEBRTC', 'Local description set');
-                socket.emit('signal', {
-                    roomId: data.roomId,
-                    signal: peerConnection.localDescription
-                });
-            })
-            .catch(error => {
-                logEvent('ERROR', 'Error creating or setting offer', error.message);
-            });
-    }
+socket.on('user-connected', id => {
+    logEvent('SYSTEM', 'User connected to room', id);
 });
 
-socket.on('chatEnded', () => {
-    logEvent('CONNECTION', 'Chat ended by partner or server');
-    resetConnection();
+socket.on('message', message => {
+    logEvent('SYSTEM', 'Received message', message);
 });
 
-socket.on('waitingInRoom', (data) => {
-    logEvent('CONNECTION', 'Waiting in specific room', data);
-    roomInfoElem.textContent = `Waiting in room: ${data.roomId}. Share this ID with your friend.`;
-    currentRoom = data.roomId;
-});
-
-socket.on('roomFull', (data) => {
-    logEvent('CONNECTION', 'Room is full', data);
-    alert(`Room ${data.roomId} is full. Please try another room ID.`);
-    resetConnection();
+socket.on('chatMessage', (message) => {
+    const messageElement = document.createElement('div');
+    messageElement.textContent = message;
+    chatLog.appendChild(messageElement);
+    chatLog.scrollTop = chatLog.scrollHeight;
 });
 
 socket.on('signal', async data => {
     logEvent('SIGNALING', 'Received signal', data.signal);
-            
+
     if (!peerConnection) {
         logEvent('WEBRTC', 'Creating peer connection in response to signal');
         createPeerConnection();
     }
-            
+
     try {
         if (data.signal.type === 'offer') {
             logEvent('WEBRTC', 'Received offer', { sdp: data.signal.sdp });
             await peerConnection.setRemoteDescription(data.signal);
             logEvent('WEBRTC', 'Set remote description (offer)');
-                    
+
             logEvent('WEBRTC', 'Creating answer');
             const answer = await peerConnection.createAnswer();
             logEvent('WEBRTC', 'Answer created', { sdp: answer.sdp });
             await peerConnection.setLocalDescription(answer);
             logEvent('WEBRTC', 'Set local description (answer)');
-                    
+
             socket.emit('signal', {
                 roomId: data.roomId,
                 signal: peerConnection.localDescription
@@ -1147,9 +1113,9 @@ socket.on('signal', async data => {
             try {
                 await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
                 logEvent('ICE', 'Added received ICE candidate', {
-                    type: data.signal.candidate.candidate.split(' ')[7], // Extract candidate type (host, srflx, etc.)
+                    type: data.signal.candidate.candidate.split(' ')[7],
                     protocol: data.signal.candidate.candidate.includes('UDP') ? 'UDP' : 'TCP',
-                    component: data.signal.candidate.candidate.split(' ')[1] // RTP or RTCP
+                    component: data.signal.candidate.candidate.split(' ')[1]
                 });
             } catch (error) {
                 logEvent('ERROR', 'Error adding received ICE candidate', error.message);
@@ -1158,20 +1124,6 @@ socket.on('signal', async data => {
     } catch (error) {
         logEvent('ERROR', 'Error handling signal', error.message);
     }
-});
-
-socket.on('debug', (data) => {
-    logEvent('DEBUG', data.message, data);
-});
-
-socket.on('debugInfo', (data) => {
-    // Update connections debug panel
-    const connectionsHtml = `<pre>${JSON.stringify(data.connections, null, 2)}</pre>`;
-    connectionsDebug.innerHTML = connectionsHtml;
-    
-    // Update rooms debug panel
-    const roomsHtml = `<pre>${JSON.stringify(data.rooms, null, 2)}</pre>`;
-    roomsDebug.innerHTML = roomsHtml;
 });
 
 // UI Event Listeners

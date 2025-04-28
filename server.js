@@ -17,7 +17,8 @@ let roomsInfo = new Map();
 
 // Connection handling
 io.on('connection', (socket) => {
-    console.log(`User connected: ${socket.id}`);
+    console.log('User connected: ', socket.id);
+    socket.emit('connected', { id: socket.id });
     connections.set(socket.id, { 
         id: socket.id, 
         room: null,
@@ -180,34 +181,19 @@ io.on('connection', (socket) => {
 
     // Disconnect
     socket.on('disconnect', () => {
-        console.log(`User disconnected: ${socket.id}`);
-        
-        const userInfo = connections.get(socket.id);
-        if (userInfo && userInfo.room) {
-            const roomId = userInfo.room;
-            const roomData = roomsInfo.get(roomId);
-            
-            if (roomData) {
-                // Notify the other user
-                roomData.users.forEach(userId => {
-                    if (userId !== socket.id) {
-                        io.to(userId).emit('chatEnded');
-                        io.to(userId).emit('debug', { message: 'Partner disconnected' });
-                        
-                        // Update their connection info
-                        if (connections.has(userId)) {
-                            connections.get(userId).room = null;
-                        }
-                    }
-                });
-                
-                // Remove room
-                roomsInfo.delete(roomId);
-            }
-        }
-        
-        connections.delete(socket.id);
+        console.log('User disconnected: ', socket.id);
         updateDebugInfo();
+    });
+
+    socket.on('joinRoom', (roomId) => {
+        socket.join(roomId);
+        console.log('User ', socket.id, ' joined room ', roomId);
+        socket.to(roomId).emit('user-connected', socket.id);
+
+        // Get the list of users in the room
+        const room = io.sockets.adapter.rooms.get(roomId);
+        const users = room ? Array.from(room) : [];
+        io.to(roomId).emit('all_users', users)
     });
 });
 
