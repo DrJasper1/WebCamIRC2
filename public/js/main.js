@@ -182,15 +182,38 @@ async function initializeMediaStream() {
             
             // Create audio track for testing
             try {
+                logEvent('MEDIA', 'Attempting to get audio-only stream for fallback');
+                
                 // First try to get just audio, as this might work even if video is in use
+                // Use specific constraints for better compatibility
                 const audioStream = await navigator.mediaDevices.getUserMedia({
-                    audio: true,
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    },
                     video: false
                 });
                 
                 // Add the real audio track to our canvas stream
                 const audioTrack = audioStream.getAudioTracks()[0];
+                
+                // Log detailed info about the audio track
+                logEvent('MEDIA', 'Audio track details for fallback', {
+                    id: audioTrack.id,
+                    label: audioTrack.label,
+                    constraints: audioTrack.getConstraints(),
+                    settings: audioTrack.getSettings(),
+                    capabilities: audioTrack.getCapabilities ? audioTrack.getCapabilities() : 'Not supported'
+                });
+                
                 stream.addTrack(audioTrack);
+                
+                // Add audio debug indicator to video
+                const audioIndicator = document.createElement('div');
+                audioIndicator.textContent = '🎤 Real Microphone Active';
+                audioIndicator.style.cssText = 'position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.5); color:white; padding:5px; border-radius:5px; z-index:100;';
+                localVideo.parentElement.appendChild(audioIndicator);
                 
                 logEvent('MEDIA', 'Using real audio with fallback video');
             } catch (audioError) {
@@ -353,21 +376,67 @@ function updateMediaDebugInfo() {
 function createPeerConnection() {
     logEvent('WEBRTC', 'Creating RTCPeerConnection');
     
-    // Create new RTCPeerConnection
-    peerConnection = new RTCPeerConnection(rtcConfig);
+    // Create new RTCPeerConnection with modified config for better compatibility
+    const config = {
+        ...rtcConfig,
+        sdpSemantics: 'unified-plan',  // Ensure modern SDP handling
+        iceTransportPolicy: 'all'      // Try all methods to establish connection
+    };
     
-    // Add all local tracks to the peer connection
+    peerConnection = new RTCPeerConnection(config);
+    
+    // Log the audio and video tracks we have available
     if (localStream) {
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-            logEvent('WEBRTC', `Added local track: ${track.kind}`);
+        const audioTracks = localStream.getAudioTracks();
+        const videoTracks = localStream.getVideoTracks();
+        
+        logEvent('WEBRTC', 'Local tracks available', {
+            audio: audioTracks.length,
+            video: videoTracks.length,
+            audioDetails: audioTracks.map(track => ({
+                id: track.id,
+                label: track.label,
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+            })),
+            videoDetails: videoTracks.map(track => ({
+                id: track.id,
+                label: track.label,
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+            }))
         });
+        
+        // Add all local tracks to the peer connection
+        const senders = localStream.getTracks().map(track => {
+            const sender = peerConnection.addTrack(track, localStream);
+            logEvent('WEBRTC', `Added local track: ${track.kind}`, { trackId: track.id });
+            return sender;
+        });
+        
+        // Store sender references for potential debug/modification needs
+        window._rtpSenders = senders;
+    } else {
+        logEvent('ERROR', 'No local stream available when creating peer connection');
     }
     
     // Handle ICE candidates
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-            logEvent('ICE', 'New ICE candidate', event.candidate);
+            // Extract useful debug info from candidate
+            const candidateInfo = {
+                foundation: event.candidate.candidate.split(' ')[0],
+                component: event.candidate.candidate.split(' ')[1],
+                protocol: event.candidate.candidate.split(' ')[2],
+                priority: event.candidate.candidate.split(' ')[3],
+                ip: event.candidate.candidate.split(' ')[4],
+                port: event.candidate.candidate.split(' ')[5],
+                type: event.candidate.candidate.split(' ')[7]
+            };
+            
+            logEvent('ICE', 'New ICE candidate', candidateInfo);
             
             // Send the ICE candidate to the remote peer via the signaling server
             socket.emit('signal', {
@@ -385,6 +454,16 @@ function createPeerConnection() {
     // Handle ICE connection state changes
     peerConnection.oniceconnectionstatechange = () => {
         logEvent('ICE', 'ICE connection state changed', peerConnection.iceConnectionState);
+        
+        // Add detailed diagnostics for failed connections
+        if (peerConnection.iceConnectionState === 'failed') {
+            logEvent('ERROR', 'ICE connection failed - detailed diagnostics', {
+                iceGatheringState: peerConnection.iceGatheringState,
+                signalingState: peerConnection.signalingState,
+                connectionState: peerConnection.connectionState,
+                timestamp: new Date().toISOString()
+            });
+        }
     };
     
     // Handle signaling state changes
@@ -398,6 +477,17 @@ function createPeerConnection() {
         
         if (peerConnection.connectionState === 'connected') {
             logEvent('CONNECTION', 'Peer connection established successfully');
+            
+            // Once connected, add diagnostic info to the UI
+            const diagInfo = document.createElement('div');
+            diagInfo.className = 'connection-info';
+            diagInfo.textContent = 'Connection established! 🎉';
+            diagInfo.style.cssText = 'position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.5); color:white; padding:5px; border-radius:5px; z-index:100;';
+            remoteVideo.parentElement.appendChild(diagInfo);
+            
+            // Check for active audio track in remote stream
+            setTimeout(checkRemoteAudio, 1000);
+            
         } else if (peerConnection.connectionState === 'failed' || 
                   peerConnection.connectionState === 'disconnected' || 
                   peerConnection.connectionState === 'closed') {
@@ -407,15 +497,122 @@ function createPeerConnection() {
     
     // Handle incoming remote tracks
     peerConnection.ontrack = (event) => {
-        logEvent('WEBRTC', 'Received remote track', { kind: event.track.kind });
+        const trackInfo = {
+            kind: event.track.kind,
+            id: event.track.id,
+            label: event.track.label,
+            enabled: event.track.enabled,
+            muted: event.track.muted,
+            readyState: event.track.readyState
+        };
+        
+        logEvent('WEBRTC', 'Received remote track', trackInfo);
+        
+        // For audio tracks, add special monitoring
+        if (event.track.kind === 'audio') {
+            event.track.onmute = () => logEvent('MEDIA', 'Remote audio track muted');
+            event.track.onunmute = () => logEvent('MEDIA', 'Remote audio track unmuted');
+            event.track.onended = () => logEvent('MEDIA', 'Remote audio track ended');
+            
+            // Add debug info to UI about audio track
+            const audioInfo = document.createElement('div');
+            audioInfo.className = 'audio-track-info';
+            audioInfo.textContent = `Audio track connected: ${event.track.label || 'Unnamed track'}`;
+            audioInfo.style.cssText = 'position:absolute; bottom:10px; right:10px; background:rgba(0,0,0,0.5); color:white; padding:5px; border-radius:5px; z-index:100;';
+            remoteVideo.parentElement.appendChild(audioInfo);
+        }
         
         // Display the remote video stream
         if (event.streams && event.streams[0]) {
             remoteVideo.srcObject = event.streams[0];
+            
+            // Log information about the received stream
+            const remoteStream = event.streams[0];
+            logEvent('MEDIA', 'Remote stream details', {
+                audio: remoteStream.getAudioTracks().length,
+                video: remoteStream.getVideoTracks().length,
+                id: remoteStream.id
+            });
+            
+            // Add volume meter for incoming audio
+            if (remoteStream.getAudioTracks().length > 0) {
+                setupRemoteAudioMeter(remoteStream);
+            }
         }
     };
     
     return peerConnection;
+}
+
+// Check remote audio after connection is established
+function checkRemoteAudio() {
+    if (!remoteVideo.srcObject) {
+        logEvent('ERROR', 'No remote stream available after connection');
+        return;
+    }
+    
+    const audioTracks = remoteVideo.srcObject.getAudioTracks();
+    logEvent('MEDIA', 'Remote audio check', {
+        audioTracks: audioTracks.length,
+        details: audioTracks.map(track => ({
+            id: track.id,
+            label: track.label,
+            enabled: track.enabled,
+            muted: track.muted,
+            readyState: track.readyState
+        }))
+    });
+    
+    if (audioTracks.length === 0) {
+        const noAudioWarning = document.createElement('div');
+        noAudioWarning.className = 'no-audio-warning';
+        noAudioWarning.textContent = 'No audio track detected in remote stream';
+        noAudioWarning.style.cssText = 'position:absolute; top:40px; left:10px; background:rgba(255,0,0,0.7); color:white; padding:5px; border-radius:5px; z-index:100;';
+        remoteVideo.parentElement.appendChild(noAudioWarning);
+    }
+}
+
+// Setup audio meter for remote audio
+function setupRemoteAudioMeter(stream) {
+    try {
+        const remoteAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = remoteAudioCtx.createMediaStreamSource(stream);
+        const analyser = remoteAudioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        
+        const meterElem = document.createElement('div');
+        meterElem.className = 'remote-audio-meter';
+        meterElem.style.cssText = 'position:absolute; bottom:40px; right:10px; background:rgba(0,0,0,0.5); color:white; padding:5px; border-radius:5px; z-index:100; width:150px;';
+        remoteVideo.parentElement.appendChild(meterElem);
+        
+        function updateMeter() {
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / bufferLength;
+            const level = Math.min(100, Math.round((average / 256) * 100));
+            
+            meterElem.innerHTML = `
+                <div>Remote Audio: ${level}%</div>
+                <div style="background:#333; height:10px; width:100%; border-radius:5px; overflow:hidden;">
+                    <div style="background:#4CAF50; height:100%; width:${level}%;"></div>
+                </div>
+            `;
+            
+            requestAnimationFrame(updateMeter);
+        }
+        
+        updateMeter();
+        
+    } catch (error) {
+        logEvent('ERROR', 'Failed to setup remote audio meter', error.message);
+    }
 }
 
 // Handle incoming WebRTC signals
@@ -428,6 +625,7 @@ async function handleSignal(data) {
     
     if (signal.type === 'offer') {
         logEvent('SIGNALING', 'Received offer signal');
+        logEvent('WEBRTC', 'Offer SDP details', analyzeSessionDescription(signal));
         
         try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
@@ -436,6 +634,7 @@ async function handleSignal(data) {
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             logEvent('WEBRTC', 'Created and set local description (answer)');
+            logEvent('WEBRTC', 'Answer SDP details', analyzeSessionDescription(answer));
             
             socket.emit('signal', {
                 roomId: currentRoom,
@@ -447,6 +646,7 @@ async function handleSignal(data) {
         }
     } else if (signal.type === 'answer') {
         logEvent('SIGNALING', 'Received answer signal');
+        logEvent('WEBRTC', 'Answer SDP details', analyzeSessionDescription(signal));
         
         try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
@@ -459,11 +659,57 @@ async function handleSignal(data) {
         
         try {
             await peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
-            logEvent('ICE', 'Added received ICE candidate');
+            logEvent('ICE', 'Added received ICE candidate', {
+                type: signal.candidate.candidate.split(' ')[7], // Extract candidate type (host, srflx, etc.)
+                protocol: signal.candidate.candidate.includes('UDP') ? 'UDP' : 'TCP',
+                component: signal.candidate.candidate.split(' ')[1] // RTP or RTCP
+            });
         } catch (error) {
             logEvent('ERROR', 'Error adding received ICE candidate', error.message);
         }
     }
+}
+
+// Analyze SDP to extract audio/video information
+function analyzeSessionDescription(sdp) {
+    const result = {
+        hasAudio: false,
+        hasVideo: false,
+        audioCodecs: [],
+        videoCodecs: [],
+        rtpExtensions: []
+    };
+    
+    if (!sdp || !sdp.sdp) return result;
+    
+    const sdpString = sdp.sdp;
+    const lines = sdpString.split('\r\n');
+    
+    let currentMedia = '';
+    
+    for (const line of lines) {
+        // Check media types
+        if (line.startsWith('m=')) {
+            currentMedia = line.split(' ')[0].substr(2);
+            if (currentMedia === 'audio') result.hasAudio = true;
+            if (currentMedia === 'video') result.hasVideo = true;
+        }
+        
+        // Get codec info
+        if (line.startsWith('a=rtpmap:') && currentMedia) {
+            const codec = line.split(' ')[1].split('/')[0];
+            if (currentMedia === 'audio') result.audioCodecs.push(codec);
+            if (currentMedia === 'video') result.videoCodecs.push(codec);
+        }
+        
+        // Get RTP extensions
+        if (line.startsWith('a=extmap:')) {
+            const ext = line.split(' ')[1];
+            result.rtpExtensions.push(ext);
+        }
+    }
+    
+    return result;
 }
 
 // Start random chat
@@ -737,6 +983,14 @@ debugTabs.forEach(tab => {
 (async function init() {
     logEvent('SYSTEM', 'Application initializing');
     
+    // Add browser info to help with debugging
+    logEvent('SYSTEM', 'Browser information', {
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        vendor: navigator.vendor,
+        language: navigator.language
+    });
+    
     // Check if getUserMedia is supported
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         logEvent('ERROR', 'getUserMedia is not supported in this browser');
@@ -744,18 +998,79 @@ debugTabs.forEach(tab => {
         return;
     }
     
+    // Check WebRTC support
+    const webrtcSupport = {
+        RTCPeerConnection: !!window.RTCPeerConnection,
+        RTCSessionDescription: !!window.RTCSessionDescription,
+        RTCIceCandidate: !!window.RTCIceCandidate,
+        mediaDevices: !!navigator.mediaDevices,
+        mediaRecorder: !!window.MediaRecorder,
+        audioContext: !!(window.AudioContext || window.webkitAudioContext)
+    };
+    logEvent('SYSTEM', 'WebRTC support', webrtcSupport);
+    
+    // Test audio context before we even start
+    try {
+        const testAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        logEvent('SYSTEM', 'Audio context created successfully', {
+            sampleRate: testAudioCtx.sampleRate,
+            state: testAudioCtx.state
+        });
+        // Resume audio context (needed in some browsers)
+        if (testAudioCtx.state === 'suspended') {
+            await testAudioCtx.resume();
+            logEvent('SYSTEM', 'Audio context resumed from suspended state');
+        }
+        testAudioCtx.close();
+    } catch (error) {
+        logEvent('ERROR', 'Audio context test failed', error.message);
+    }
+    
     // Initialize media stream
     await initializeMediaStream();
     
-    // Log WebRTC support info
-    logEvent('SYSTEM', 'WebRTC support', {
-        RTCPeerConnection: !!window.RTCPeerConnection,
-        RTCSessionDescription: !!window.RTCSessionDescription,
-        RTCIceCandidate: !!window.RTCIceCandidate
-    });
-    
     // Show debug content by default
     document.getElementById('debugContent').style.display = 'block';
+    
+    // Add a browser-specific audio test button
+    const audioTestBtn = document.createElement('button');
+    audioTestBtn.textContent = 'Test Browser Audio';
+    audioTestBtn.style.cssText = 'position:fixed; bottom:10px; right:10px; z-index:9999; background:#4CAF50; color:white; border:none; padding:10px; border-radius:5px;';
+    document.body.appendChild(audioTestBtn);
+    
+    audioTestBtn.addEventListener('click', () => {
+        // Create a simple audio test
+        try {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); // A4 note
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            // Short beep
+            gainNode.gain.value = 0.1;
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.5);
+            
+            logEvent('SYSTEM', 'Browser audio test successful');
+            audioTestBtn.textContent = 'Audio Works! ✓';
+            audioTestBtn.style.background = '#2E7D32';
+            
+            // Reset after 2 seconds
+            setTimeout(() => {
+                audioTestBtn.textContent = 'Test Browser Audio';
+                audioTestBtn.style.background = '#4CAF50';
+            }, 2000);
+            
+        } catch (error) {
+            logEvent('ERROR', 'Browser audio test failed', error.message);
+            audioTestBtn.textContent = 'Audio Failed! ✗';
+            audioTestBtn.style.background = '#C62828';
+        }
+    });
     
     logEvent('SYSTEM', 'Application initialized successfully');
 })();
