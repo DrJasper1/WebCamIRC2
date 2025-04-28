@@ -40,13 +40,20 @@ let isVideoMuted = false;
 let audioAnalyser = null;
 let audioContext = null;
 
-// Configuration for WebRTC
+// Enhanced rtcConfig with more Ice servers and audio-specific settings
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
-    ]
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun.services.mozilla.com' }
+    ],
+    iceCandidatePoolSize: 10,
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require',
+    // Audio-specific optimizations
+    sdpSemantics: 'unified-plan'
 };
 
 // Debug helpers
@@ -123,6 +130,103 @@ function updateSpecificDebugPanel(category, message, data) {
             // For microphone information, we want to display it prominently
             updateMicrophoneInfo(message, data);
             break;
+        case 'AUDIO_DEBUG':
+            // Add a new section for audio-specific debugging
+            if (!document.getElementById('audioDebugSection')) {
+                // Create the section if it doesn't exist
+                const debugBody = document.querySelector('.debug-body');
+                const audioDebugSection = document.createElement('div');
+                audioDebugSection.id = 'audioDebugSection';
+                audioDebugSection.className = 'debug-section';
+                audioDebugSection.innerHTML = `
+                    <h4>Audio Debugging</h4>
+                    <div id="audioDebugContent" style="max-height:200px;overflow-y:auto;"></div>
+                    <button id="fixAudioBtn" style="margin-top:10px;background:#FF5722;color:white;padding:5px 10px;border:none;border-radius:3px;">Force Audio Fix</button>
+                `;
+                debugBody.insertBefore(audioDebugSection, debugBody.firstChild);
+                
+                // Add event listener to the fix button
+                document.getElementById('fixAudioBtn').addEventListener('click', forceFixAudio);
+            }
+            
+            // Add the message to the audio debug section
+            const audioDebugContent = document.getElementById('audioDebugContent');
+            appendToElement(audioDebugContent, message, data);
+            break;
+    }
+}
+
+// CRITICAL FIX: Force fix audio issues
+function forceFixAudio() {
+    logEvent('AUDIO_DEBUG', 'Manual audio fix triggered');
+    
+    // Force all audio elements to be unmuted and at full volume
+    const audioElements = document.querySelectorAll('audio, video');
+    audioElements.forEach(el => {
+        el.muted = false;
+        el.volume = 1.0;
+        
+        // Try to force play
+        el.play().catch(err => {
+            logEvent('AUDIO_DEBUG', 'Error forcing play on element', err.message);
+        });
+    });
+    
+    // If we have a remote stream, try to reinitialize it
+    if (remoteVideo.srcObject) {
+        const stream = remoteVideo.srcObject;
+        
+        // Remove and reattach the stream
+        remoteVideo.srcObject = null;
+        setTimeout(() => {
+            remoteVideo.srcObject = stream;
+            remoteVideo.play().catch(err => {
+                logEvent('AUDIO_DEBUG', 'Error restarting remote video', err.message);
+            });
+        }, 100);
+    }
+    
+    // Create and play a test tone to trigger audio system
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+        
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        gainNode.gain.value = 0.1;
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.frequency.value = 440;
+        oscillator.start();
+        setTimeout(() => oscillator.stop(), 300);
+        
+        logEvent('AUDIO_DEBUG', 'Test tone played to wake audio system');
+    } catch (err) {
+        logEvent('AUDIO_DEBUG', 'Error playing test tone', err.message);
+    }
+    
+    // Check browser audio permissions
+    navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+            logEvent('AUDIO_DEBUG', 'Audio permission check passed');
+            stream.getTracks().forEach(track => track.stop());
+        })
+        .catch(err => {
+            logEvent('AUDIO_DEBUG', 'Audio permission check failed', err.message);
+        });
+        
+    // Try to check the output audio devices
+    if (typeof navigator.mediaDevices.enumerateDevices === 'function') {
+        navigator.mediaDevices.enumerateDevices()
+            .then(devices => {
+                const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+                logEvent('AUDIO_DEBUG', 'Available audio outputs', audioOutputs.map(d => d.label || d.deviceId));
+            })
+            .catch(err => {
+                logEvent('AUDIO_DEBUG', 'Error checking audio outputs', err.message);
+            });
     }
 }
 
@@ -528,13 +632,9 @@ function createPeerConnection() {
     logEvent('WEBRTC', 'Creating RTCPeerConnection');
     
     // Create new RTCPeerConnection with modified config for better compatibility
-    const config = {
-        ...rtcConfig,
-        sdpSemantics: 'unified-plan',  // Ensure modern SDP handling
-        iceTransportPolicy: 'all'      // Try all methods to establish connection
-    };
+    // rtcConfig already includes the necessary audio optimizations
     
-    peerConnection = new RTCPeerConnection(config);
+    peerConnection = new RTCPeerConnection(rtcConfig);
     
     // Log the audio and video tracks we have available
     if (localStream) {
@@ -661,28 +761,133 @@ function createPeerConnection() {
         
         // For audio tracks, add special monitoring
         if (event.track.kind === 'audio') {
-            event.track.onmute = () => logEvent('MEDIA', 'Remote audio track muted');
-            event.track.onunmute = () => logEvent('MEDIA', 'Remote audio track unmuted');
-            event.track.onended = () => logEvent('MEDIA', 'Remote audio track ended');
+            logEvent('AUDIO_DEBUG', 'Remote audio track received - detailed info', {
+                id: event.track.id,
+                label: event.track.label,
+                readyState: event.track.readyState,
+                enabled: event.track.enabled,
+                muted: event.track.muted,
+                streamId: event.streams[0] ? event.streams[0].id : 'No stream ID',
+                timestamp: new Date().toISOString()
+            });
+            
+            // Add critical audio track event listeners
+            event.track.onmute = () => logEvent('AUDIO_DEBUG', 'Remote audio track muted');
+            event.track.onunmute = () => logEvent('AUDIO_DEBUG', 'Remote audio track unmuted');
+            event.track.onended = () => logEvent('AUDIO_DEBUG', 'Remote audio track ended');
+            
+            // CRITICAL FIX: Force audio to be playable
+            try {
+                // Create an AudioContext to process the track
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Ensure audio context is running
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume().then(() => {
+                        logEvent('AUDIO_DEBUG', 'Audio context resumed successfully');
+                    }).catch(err => {
+                        logEvent('AUDIO_DEBUG', 'Failed to resume audio context', err.message);
+                    });
+                }
+                
+                // Add a test tone to verify audio output is working
+                const audioTestBtn = document.createElement('button');
+                audioTestBtn.textContent = 'Test Remote Audio';
+                audioTestBtn.style.cssText = 'position:absolute; top:10px; right:10px; background:#FF5722; color:white; padding:5px; border-radius:5px; z-index:100;';
+                remoteVideo.parentElement.appendChild(audioTestBtn);
+                
+                audioTestBtn.addEventListener('click', () => {
+                    // Create a temporary oscillator to test audio output
+                    const oscillator = audioCtx.createOscillator();
+                    const gainNode = audioCtx.createGain();
+                    gainNode.gain.value = 0.2;
+                    oscillator.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    oscillator.frequency.value = 440;
+                    oscillator.start();
+                    setTimeout(() => oscillator.stop(), 500);
+                    
+                    logEvent('AUDIO_DEBUG', 'Remote audio test tone played');
+                });
+                
+                // Add audio output device selector
+                navigator.mediaDevices.enumerateDevices().then(devices => {
+                    const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
+                    if (audioOutputs.length > 0 && remoteVideo.sinkId !== undefined) {
+                        const outputSelector = document.createElement('select');
+                        outputSelector.style.cssText = 'position:absolute; top:45px; right:10px; z-index:100;';
+                        
+                        // Add options for each audio output device
+                        audioOutputs.forEach(device => {
+                            const option = document.createElement('option');
+                            option.value = device.deviceId;
+                            option.text = device.label || `Output ${device.deviceId.slice(0, 5)}`;
+                            outputSelector.appendChild(option);
+                        });
+                        
+                        // Set the sink ID when changed
+                        outputSelector.addEventListener('change', () => {
+                            const deviceId = outputSelector.value;
+                            remoteVideo.setSinkId(deviceId).then(() => {
+                                logEvent('AUDIO_DEBUG', 'Changed audio output device', deviceId);
+                            }).catch(err => {
+                                logEvent('AUDIO_DEBUG', 'Error changing audio output device', err.message);
+                            });
+                        });
+                        
+                        remoteVideo.parentElement.appendChild(outputSelector);
+                        logEvent('AUDIO_DEBUG', 'Added audio output device selector');
+                    }
+                }).catch(err => {
+                    logEvent('AUDIO_DEBUG', 'Error enumerating output devices', err.message);
+                });
+                
+            } catch (err) {
+                logEvent('AUDIO_DEBUG', 'Error setting up audio output helpers', err.message);
+            }
             
             // Add debug info to UI about audio track
             const audioInfo = document.createElement('div');
             audioInfo.className = 'audio-track-info';
-            audioInfo.textContent = `Audio track connected: ${event.track.label || 'Unnamed track'}`;
-            audioInfo.style.cssText = 'position:absolute; bottom:10px; right:10px; background:rgba(0,0,0,0.5); color:white; padding:5px; border-radius:5px; z-index:100;';
+            audioInfo.innerHTML = `<strong>Audio Track:</strong> ${event.track.label || 'Unnamed track'}<br><span style="color:#4CAF50">✓ Connected</span>`;
+            audioInfo.style.cssText = 'position:absolute; bottom:40px; right:10px; background:rgba(0,0,0,0.7); color:white; padding:5px; border-radius:5px; z-index:100;';
             remoteVideo.parentElement.appendChild(audioInfo);
         }
         
         // Display the remote video stream
         if (event.streams && event.streams[0]) {
-            remoteVideo.srcObject = event.streams[0];
+            // CRITICAL FIX: Make sure audio is enabled and directly connect to the video element
+            const remoteStream = event.streams[0];
+            remoteVideo.srcObject = remoteStream;
+            remoteVideo.muted = false; // Ensure audio is not muted
+            remoteVideo.volume = 1.0;  // Set volume to maximum
+            
+            // Force audio to play regardless of user interaction
+            const playPromise = remoteVideo.play().catch(err => {
+                logEvent('AUDIO_DEBUG', 'Error auto-playing remote video with audio', err.message);
+                
+                // Add play button if autoplay fails
+                const playBtn = document.createElement('button');
+                playBtn.textContent = 'Click to Enable Audio';
+                playBtn.style.cssText = 'position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#4CAF50; color:white; padding:10px; border-radius:5px; z-index:100;';
+                remoteVideo.parentElement.appendChild(playBtn);
+                
+                playBtn.addEventListener('click', () => {
+                    remoteVideo.play();
+                    playBtn.remove();
+                    logEvent('AUDIO_DEBUG', 'User manually enabled audio playback');
+                });
+            });
             
             // Log information about the received stream
-            const remoteStream = event.streams[0];
-            logEvent('MEDIA', 'Remote stream details', {
-                audio: remoteStream.getAudioTracks().length,
-                video: remoteStream.getVideoTracks().length,
-                id: remoteStream.id
+            logEvent('AUDIO_DEBUG', 'Remote stream connected', {
+                audioTracks: remoteStream.getAudioTracks().length,
+                videoTracks: remoteStream.getVideoTracks().length,
+                streamId: remoteStream.id,
+                streamActive: remoteStream.active,
+                videoElementMuted: remoteVideo.muted,
+                videoElementVolume: remoteVideo.volume,
+                audioOutputDevice: remoteVideo.sinkId || 'default'
             });
             
             // Add audio visualizer for remote stream
@@ -738,19 +943,29 @@ async function handleSignal(data) {
         logEvent('WEBRTC', 'Offer SDP details', analyzeSessionDescription(signal));
         
         try {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+            // CRITICAL FIX: Check and modify SDP to ensure audio is properly enabled
+            let modifiedSignal = ensureAudioEnabled(signal);
+            
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(modifiedSignal));
             logEvent('WEBRTC', 'Set remote description from offer');
             
             const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
+            
+            // CRITICAL FIX: Modify answer SDP to ensure audio is prioritized
+            const modifiedAnswer = ensureAudioEnabled(answer);
+            
+            await peerConnection.setLocalDescription(modifiedAnswer);
             logEvent('WEBRTC', 'Created and set local description (answer)');
-            logEvent('WEBRTC', 'Answer SDP details', analyzeSessionDescription(answer));
+            logEvent('WEBRTC', 'Answer SDP details', analyzeSessionDescription(modifiedAnswer));
             
             socket.emit('signal', {
                 roomId: currentRoom,
                 signal: peerConnection.localDescription
             });
             logEvent('SIGNALING', 'Sent answer signal');
+            
+            // Log the full SDP for debugging
+            logEvent('AUDIO_DEBUG', 'Full answer SDP', peerConnection.localDescription.sdp);
         } catch (error) {
             logEvent('ERROR', 'Error handling offer signal', error.message);
         }
@@ -759,8 +974,14 @@ async function handleSignal(data) {
         logEvent('WEBRTC', 'Answer SDP details', analyzeSessionDescription(signal));
         
         try {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+            // CRITICAL FIX: Check and modify SDP to ensure audio is properly enabled
+            let modifiedSignal = ensureAudioEnabled(signal);
+            
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(modifiedSignal));
             logEvent('WEBRTC', 'Set remote description from answer');
+            
+            // Log the full SDP for debugging
+            logEvent('AUDIO_DEBUG', 'Full remote SDP', peerConnection.remoteDescription.sdp);
         } catch (error) {
             logEvent('ERROR', 'Error handling answer signal', error.message);
         }
@@ -778,6 +999,86 @@ async function handleSignal(data) {
             logEvent('ERROR', 'Error adding received ICE candidate', error.message);
         }
     }
+}
+
+// CRITICAL FIX: Helper function to ensure audio is enabled in SDP
+function ensureAudioEnabled(sessionDescription) {
+    if (!sessionDescription || !sessionDescription.sdp) {
+        return sessionDescription;
+    }
+    
+    // Create a copy to modify
+    const modifiedSDP = {
+        type: sessionDescription.type,
+        sdp: sessionDescription.sdp
+    };
+    
+    let sdpLines = modifiedSDP.sdp.split('\r\n');
+    let audioMLineIndex = -1;
+    
+    // Find the audio m-line
+    for (let i = 0; i < sdpLines.length; i++) {
+        if (sdpLines[i].startsWith('m=audio')) {
+            audioMLineIndex = i;
+            break;
+        }
+    }
+    
+    if (audioMLineIndex === -1) {
+        logEvent('AUDIO_DEBUG', 'No audio m-line found in SDP');
+        return sessionDescription; // No audio line found, return original
+    }
+    
+    // Check if audio is inactive and make it active
+    for (let i = audioMLineIndex; i < sdpLines.length; i++) {
+        // If we hit another m-line, we've gone too far
+        if (i !== audioMLineIndex && sdpLines[i].startsWith('m=')) {
+            break;
+        }
+        
+        // Make sure audio is not inactive or recvonly
+        if (sdpLines[i].includes('a=inactive')) {
+            sdpLines[i] = 'a=sendrecv';
+            logEvent('AUDIO_DEBUG', 'Changed audio direction from inactive to sendrecv');
+        } else if (sdpLines[i].includes('a=recvonly')) {
+            sdpLines[i] = 'a=sendrecv';
+            logEvent('AUDIO_DEBUG', 'Changed audio direction from recvonly to sendrecv');
+        }
+    }
+    
+    // Ensure opus is prioritized if present
+    const opusRegex = /a=rtpmap:(\d+) opus\/.*/;
+    let opusPayloadType = null;
+    
+    for (const line of sdpLines) {
+        const match = line.match(opusRegex);
+        if (match) {
+            opusPayloadType = match[1];
+            break;
+        }
+    }
+    
+    if (opusPayloadType) {
+        // Modify the audio m-line to prioritize opus
+        const mLine = sdpLines[audioMLineIndex].split(' ');
+        const formats = mLine.slice(3); // Get all format payload types
+        
+        // Remove opus from the formats array
+        const opusIndex = formats.indexOf(opusPayloadType);
+        if (opusIndex > 0) { // Only modify if opus is not already first
+            formats.splice(opusIndex, 1); // Remove opus
+            formats.unshift(opusPayloadType); // Add opus at the beginning
+            
+            // Rebuild the m-line
+            mLine.splice(3, mLine.length - 3, ...formats);
+            sdpLines[audioMLineIndex] = mLine.join(' ');
+            logEvent('AUDIO_DEBUG', 'Prioritized Opus codec in SDP');
+        }
+    }
+    
+    // Rebuild the SDP
+    modifiedSDP.sdp = sdpLines.join('\r\n');
+    return modifiedSDP;
 }
 
 // Analyze SDP to extract audio/video information
