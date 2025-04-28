@@ -1126,6 +1126,10 @@ socket.on('signal', async data => {
     }
 });
 
+socket.on('ping', () => {
+    logEvent('SYSTEM', 'Received ping from server');
+});
+
 // UI Event Listeners
 startBtn.addEventListener('click', startRandomChat);
 endBtn.addEventListener('click', endCurrentChat);
