@@ -910,8 +910,11 @@ async function startRandomChat() {
         }
     }
     
-    // Reset any existing connections
-    resetConnection();
+    // Reset connection ONLY if already in a room or connected
+    if (peerConnection || currentRoom) {
+        console.log('StartRandomChat: Resetting existing connection...');
+        resetConnection();
+    }
     
     // Enable/disable buttons
     startBtn.disabled = true;
