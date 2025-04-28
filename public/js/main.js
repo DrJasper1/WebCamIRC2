@@ -967,6 +967,9 @@ function endCurrentChat() {
 
 // Reset connection and UI
 function resetConnection() {
+    console.trace('resetConnection called'); // Add trace
+    logEvent('CONNECTION', 'Connection reset');
+    
     // Close peer connection
     if (peerConnection) {
         peerConnection.close();
