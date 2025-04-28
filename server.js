@@ -173,6 +173,11 @@ io.on('connection', (socket) => {
         updateDebugInfo();
     });
 
+    // Handle chat messages
+    socket.on('chatMessage', (message) => {
+        io.emit('chatMessage', message);
+    });
+
     // Disconnect
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id}`);

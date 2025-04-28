@@ -233,9 +233,33 @@ async function initializeMediaStream() {
             video: true,
             audio: true
         });
+        logEvent('MEDIA', 'Media stream initialized successfully');
+        
+        // Log the audio and video tracks we have available
+        const audioTracks = stream.getAudioTracks();
+        const videoTracks = stream.getVideoTracks();
+        logEvent('MEDIA', 'Local tracks available', {
+            audio: audioTracks.length,
+            video: videoTracks.length,
+            audioDetails: audioTracks.map(track => ({
+                id: track.id,
+                label: track.label,
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+            })),
+            videoDetails: videoTracks.map(track => ({
+                id: track.id,
+                label: track.label,
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+            }))
+        });
         
         localStream = stream;
         localVideo.srcObject = stream;
+        logEvent('MEDIA', 'Local stream assigned to video element');
         
         // Enable buttons
         startBtn.disabled = false;
@@ -555,10 +579,13 @@ function updateMediaDebugInfo() {
 // Create and manage WebRTC peer connection
 function createPeerConnection() {
     logEvent('WEBRTC', 'Creating RTCPeerConnection');
-    
-    // Create new RTCPeerConnection with modified config for better compatibility
-    // rtcConfig already includes the necessary audio optimizations
-    
+
+    // Check if local stream has audio and video tracks
+    if (!localStream || localStream.getAudioTracks().length === 0 || localStream.getVideoTracks().length === 0) {
+        logEvent('ERROR', 'Local stream missing audio or video tracks');
+        return;
+    }
+
     peerConnection = new RTCPeerConnection(rtcConfig);
     
     // Log the audio and video tracks we have available
@@ -566,7 +593,12 @@ function createPeerConnection() {
         logEvent('WEBRTC', 'Local stream tracks:');
         localStream.getTracks().forEach(track => {
             logEvent('WEBRTC', `- Track: ${track.kind}, ID: ${track.id}, Enabled: ${track.enabled}`);
-            peerConnection.addTrack(track, localStream);
+            try {
+                peerConnection.addTrack(track, localStream);
+                logEvent('WEBRTC', `Added local track: ${track.kind}`, { trackId: track.id });
+            } catch (error) {
+                logEvent('ERROR', `Failed to add local track: ${track.kind}`, { trackId: track.id, error: error.message });
+            }
         });
     } else {
         logEvent('WEBRTC', 'Local stream is null.');
@@ -579,6 +611,7 @@ function createPeerConnection() {
     // Handle ICE candidates
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
+            logEvent('WEBRTC', 'ICE candidate generated', { candidate: event.candidate });
             // Extract useful debug info from candidate
             const candidateInfo = {
                 foundation: event.candidate.candidate.split(' ')[0],
@@ -596,12 +629,13 @@ function createPeerConnection() {
             socket.emit('signal', {
                 roomId: currentRoom,
                 signal: {
-                    type: 'ice-candidate',
+                    type: 'candidate',
                     candidate: event.candidate
                 }
             });
+            logEvent('SIGNALING', 'Sent ICE candidate signal');
         } else {
-            logEvent('ICE', 'ICE gathering complete');
+            logEvent('WEBRTC', 'ICE gathering complete');
         }
     };
     
@@ -654,92 +688,23 @@ function createPeerConnection() {
         logEvent('WEBRTC', 'Remote track received', { track: event.track });
         console.log('Remote track received:', event.track);
         if (event.track.kind === 'audio') {
-            remoteAudio.srcObject = event.streams[0];
-            logEvent('WEBRTC', 'Remote audio stream set', { stream: event.streams[0] });
-
-            // CRITICAL FIX: Force audio to be playable
             try {
-                // Create an AudioContext to process the track
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-                // Ensure audio context is running
-                if (audioCtx.state === 'suspended') {
-                    audioCtx.resume().then(() => {
-                        logEvent('AUDIO_DEBUG', 'Audio context resumed successfully');
-                    }).catch(err => {
-                        logEvent('AUDIO_DEBUG', 'Failed to resume audio context', err.message);
-                    });
-                }
-
-                // Force audio to play regardless of user interaction
-                const playPromise = remoteAudio.play().catch(err => {
-                    logEvent('AUDIO_DEBUG', 'Error auto-playing remote video with audio', err.message);
-
-                    // Add play button if autoplay fails
-                    const playBtn = document.createElement('button');
-                    playBtn.textContent = 'Click to Enable Audio';
-                    playBtn.style.cssText = 'position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#4CAF50; color:white; padding:10px; border-radius:5px; z-index:100;';
-                    remoteVideo.parentElement.appendChild(playBtn);
-
-                    playBtn.addEventListener('click', () => {
-                        remoteAudio.play();
-                        playBtn.remove();
-                        logEvent('AUDIO_DEBUG', 'User manually enabled audio playback');
-                    });
-                });
-
-                // Log information about the received stream
-                logEvent('AUDIO_DEBUG', 'Remote stream connected', {
-                    audioTracks: event.streams[0].getAudioTracks().length,
-                    videoTracks: event.streams[0].getVideoTracks().length,
-                    streamId: event.streams[0].id,
-                    streamActive: event.streams[0].active,
-                    videoElementMuted: remoteAudio.muted,
-                    videoElementVolume: remoteAudio.volume
-                });
-
-                // Add audio visualizer for remote stream
-                if (event.streams[0].getAudioTracks().length > 0) {
-                    setupAudioVisualizer(event.streams[0], 'remote');
-                }
-            } catch (err) {
-                logEvent('AUDIO_DEBUG', 'Error setting up audio output helpers', err.message);
+                remoteAudio.srcObject = event.streams[0];
+                logEvent('WEBRTC', 'Remote audio stream set', { stream: event.streams[0] });
+            } catch (error) {
+                logEvent('ERROR', `Failed to set remote audio stream`, { error: error.message });
             }
         } else if (event.track.kind === 'video') {
-            remoteVideo.srcObject = event.streams[0];
-            logEvent('WEBRTC', 'Remote video stream set', { stream: event.streams[0] });
+            try {
+                remoteVideo.srcObject = event.streams[0];
+                logEvent('WEBRTC', 'Remote video stream set', { stream: event.streams[0] });
+            } catch (error) {
+                logEvent('ERROR', `Failed to set remote video stream`, { error: error.message });
+            }
         }
     };
     
     return peerConnection;
-}
-
-// Check remote audio after connection is established
-function checkRemoteAudio() {
-    if (!remoteVideo.srcObject) {
-        logEvent('ERROR', 'No remote stream available after connection');
-        return;
-    }
-    
-    const audioTracks = remoteVideo.srcObject.getAudioTracks();
-    logEvent('MEDIA', 'Remote audio check', {
-        audioTracks: audioTracks.length,
-        details: audioTracks.map(track => ({
-            id: track.id,
-            label: track.label,
-            enabled: track.enabled,
-            muted: track.muted,
-            readyState: track.readyState
-        }))
-    });
-    
-    if (audioTracks.length === 0) {
-        const noAudioWarning = document.createElement('div');
-        noAudioWarning.className = 'no-audio-warning';
-        noAudioWarning.textContent = 'No audio track detected in remote stream';
-        noAudioWarning.style.cssText = 'position:absolute; top:40px; left:10px; background:rgba(255,0,0,0.7); color:white; padding:5px; border-radius:5px; z-index:100;';
-        remoteVideo.parentElement.appendChild(noAudioWarning);
-    }
 }
 
 // This function has been replaced by the more comprehensive setupAudioVisualizer
@@ -763,14 +728,11 @@ async function handleSignal(data) {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(modifiedSignal));
             logEvent('WEBRTC', 'Set remote description from offer');
             
+            logEvent('WEBRTC', 'Creating answer');
             const answer = await peerConnection.createAnswer();
-            
-            // CRITICAL FIX: Modify answer SDP to ensure audio is prioritized
-            const modifiedAnswer = ensureAudioEnabled(answer);
-            
-            await peerConnection.setLocalDescription(modifiedAnswer);
-            logEvent('WEBRTC', 'Created and set local description (answer)');
-            logEvent('WEBRTC', 'Answer SDP details', analyzeSessionDescription(modifiedAnswer));
+            logEvent('WEBRTC', 'Answer created', { sdp: answer.sdp });
+            await peerConnection.setLocalDescription(answer);
+            logEvent('WEBRTC', 'Set local description (answer)');
             
             socket.emit('signal', {
                 roomId: currentRoom,
@@ -1116,19 +1078,22 @@ socket.on('chatStart', async (data) => {
     
     // If we are the initiator, create and send an offer
     if (socket.id === data.users?.[0]) {
-        try {
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            logEvent('WEBRTC', 'Created and set local description (offer)');
-            
-            socket.emit('signal', {
-                roomId: data.roomId,
-                signal: peerConnection.localDescription
+        logEvent('WEBRTC', 'Creating offer');
+        peerConnection.createOffer()
+            .then(offer => {
+                logEvent('WEBRTC', 'Offer created', { sdp: offer.sdp });
+                return peerConnection.setLocalDescription(offer);
+            })
+            .then(() => {
+                logEvent('WEBRTC', 'Local description set');
+                socket.emit('signal', {
+                    roomId: data.roomId,
+                    signal: peerConnection.localDescription
+                });
+            })
+            .catch(error => {
+                logEvent('ERROR', 'Error creating or setting offer', error.message);
             });
-            logEvent('SIGNALING', 'Sent offer signal');
-        } catch (error) {
-            logEvent('ERROR', 'Error creating offer', error.message);
-        }
     }
 });
 
@@ -1149,9 +1114,50 @@ socket.on('roomFull', (data) => {
     resetConnection();
 });
 
-socket.on('signal', (data) => {
-    logEvent('SIGNALING', 'Received signal', { from: data.from, type: data.signal.type });
-    handleSignal(data);
+socket.on('signal', async data => {
+    logEvent('SIGNALING', 'Received signal', data.signal);
+            
+    if (!peerConnection) {
+        logEvent('WEBRTC', 'Creating peer connection in response to signal');
+        createPeerConnection();
+    }
+            
+    try {
+        if (data.signal.type === 'offer') {
+            logEvent('WEBRTC', 'Received offer', { sdp: data.signal.sdp });
+            await peerConnection.setRemoteDescription(data.signal);
+            logEvent('WEBRTC', 'Set remote description (offer)');
+                    
+            logEvent('WEBRTC', 'Creating answer');
+            const answer = await peerConnection.createAnswer();
+            logEvent('WEBRTC', 'Answer created', { sdp: answer.sdp });
+            await peerConnection.setLocalDescription(answer);
+            logEvent('WEBRTC', 'Set local description (answer)');
+                    
+            socket.emit('signal', {
+                roomId: data.roomId,
+                signal: peerConnection.localDescription
+            });
+            logEvent('SIGNALING', 'Sent answer signal');
+        } else if (data.signal.type === 'answer') {
+            logEvent('WEBRTC', 'Received answer', { sdp: data.signal.sdp });
+            await peerConnection.setRemoteDescription(data.signal);
+            logEvent('WEBRTC', 'Set remote description (answer)');
+        } else if (data.signal.candidate) {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
+                logEvent('ICE', 'Added received ICE candidate', {
+                    type: data.signal.candidate.candidate.split(' ')[7], // Extract candidate type (host, srflx, etc.)
+                    protocol: data.signal.candidate.candidate.includes('UDP') ? 'UDP' : 'TCP',
+                    component: data.signal.candidate.candidate.split(' ')[1] // RTP or RTCP
+                });
+            } catch (error) {
+                logEvent('ERROR', 'Error adding received ICE candidate', error.message);
+            }
+        }
+    } catch (error) {
+        logEvent('ERROR', 'Error handling signal', error.message);
+    }
 });
 
 socket.on('debug', (data) => {
@@ -1185,6 +1191,26 @@ clearLogBtn.addEventListener('click', () => {
 });
 
 // Debug panel is now always visible, no need for tab switching code
+
+// Text Chat Functionality
+const chatInput = document.getElementById('chat-input');
+const sendButton = document.getElementById('send-button');
+const chatLog = document.getElementById('chat-log');
+
+sendButton.addEventListener('click', () => {
+    const message = chatInput.value;
+    if (message) {
+        socket.emit('chatMessage', message);
+        chatInput.value = '';
+    }
+});
+
+socket.on('chatMessage', (message) => {
+    const messageElement = document.createElement('div');
+    messageElement.textContent = message;
+    chatLog.appendChild(messageElement);
+    chatLog.scrollTop = chatLog.scrollHeight;
+});
 
 // Initialize the application
 (async function init() {
