@@ -153,8 +153,60 @@ async function initializeMediaStream() {
         return true;
     } catch (error) {
         logEvent('ERROR', 'Failed to access media devices', error.message);
-        alert(`Error accessing your camera and microphone: ${error.message}`);
-        return false;
+        
+        // Create a fallback for testing (canvas stream instead of camera)
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = 640;
+            canvas.height = 480;
+            const ctx = canvas.getContext('2d');
+            
+            // Draw something on the canvas
+            ctx.fillStyle = '#333';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff';
+            ctx.font = '24px Arial';
+            ctx.fillText('Camera Unavailable', 20, 240);
+            ctx.fillText('Test Mode Active', 20, 270);
+            
+            // Add timestamp that updates
+            setInterval(() => {
+                ctx.fillStyle = '#333';
+                ctx.fillRect(0, 300, canvas.width, 40);
+                ctx.fillStyle = '#fff';
+                ctx.fillText(new Date().toLocaleTimeString(), 20, 330);
+            }, 1000);
+            
+            // Create a stream from the canvas
+            const stream = canvas.captureStream(30);
+            
+            // Create silent audio track if needed
+            if (error.message.includes('in use')) {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioCtx.createOscillator();
+                const dst = oscillator.connect(audioCtx.createMediaStreamDestination());
+                oscillator.start();
+                const audioTrack = dst.stream.getAudioTracks()[0];
+                audioTrack.enabled = false; // Mute it
+                stream.addTrack(audioTrack);
+            }
+            
+            localStream = stream;
+            localVideo.srcObject = stream;
+            
+            // Enable buttons
+            startBtn.disabled = false;
+            joinRoomBtn.disabled = false;
+            
+            logEvent('MEDIA', 'Using fallback test stream (no camera)');
+            updateMediaDebugInfo();
+            
+            return true;
+        } catch (fallbackError) {
+            logEvent('ERROR', 'Failed to create fallback stream', fallbackError.message);
+            alert(`Error accessing your camera and microphone: ${error.message}\n\nFallback also failed: ${fallbackError.message}`);
+            return false;
+        }
     }
 }
 
@@ -366,8 +418,12 @@ async function handleSignal(data) {
 // Start random chat
 async function startRandomChat() {
     if (!localStream) {
-        alert('Please allow access to your camera and microphone first.');
-        return;
+        // Try initializing with fallback for testing
+        const success = await initializeMediaStream();
+        if (!success) {
+            alert('Failed to initialize media stream. Please try again or check console for errors.');
+            return;
+        }
     }
     
     // Reset any existing connections
@@ -394,8 +450,12 @@ async function joinSpecificRoom() {
     }
     
     if (!localStream) {
-        alert('Please allow access to your camera and microphone first.');
-        return;
+        // Try initializing with fallback for testing
+        const success = await initializeMediaStream();
+        if (!success) {
+            alert('Failed to initialize media stream. Please try again or check console for errors.');
+            return;
+        }
     }
     
     // Reset any existing connections
