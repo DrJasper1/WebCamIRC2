@@ -188,6 +188,9 @@ io.on('connection', (socket) => {
     // Disconnect
     socket.on('disconnect', () => {
         console.log('User disconnected: ', socket.id);
+        console.log('Reason: ', socket.disconnected);
+        console.log('Was the socket closed by the client?', socket.client.conn.readyState === 3);
+        console.log('Was the socket closed by the server?', socket.client.conn.readyState === 4);
         updateDebugInfo();
     });
 
