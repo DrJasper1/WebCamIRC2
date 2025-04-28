@@ -36,6 +36,7 @@ io.on('connection', (socket) => {
     
     // Looking for random chat partner
     socket.on('findPartner', () => {
+        console.log(`[Server] Received 'findPartner' event from user ${socket.id}`);
         console.log(`[Server] User ${socket.id} is looking for a partner.`);
         console.log(`[Server] waitingUsers before add: [${Array.from(waitingUsers)}]`);
 

@@ -921,6 +921,7 @@ async function startRandomChat() {
     joinRoomBtn.disabled = true;
     
     // Find a random chat partner
+    console.log('[Client] Emitting findPartner event to server');
     socket.emit('findPartner');
     logEvent('CONNECTION', 'Looking for a random chat partner');
     

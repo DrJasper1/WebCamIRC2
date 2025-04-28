@@ -1,0 +1,7 @@
+tunnel: webcamirc2
+credentials-file: C:\Users\AM\.cloudflared\cert.pem
+
+ingress:
+  - hostname: webcamirc2.trycloudflare.com
+    service: http://localhost:8080
+  - service: http_status:404
