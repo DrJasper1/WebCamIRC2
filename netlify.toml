@@ -1,0 +1,11 @@
+[build]
+  publish = "public"
+  command = "npm install"
+
+[build.environment]
+  NODE_VERSION = "16"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
