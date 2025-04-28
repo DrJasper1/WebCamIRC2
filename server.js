@@ -20,10 +20,10 @@ io.on('connection', (socket) => {
     console.log('User connected: ', socket.id);
     socket.emit('connected', { id: socket.id });
     
-    // Keep-alive mechanism
-    setInterval(() => {
-        socket.emit('ping');
-    }, 30000); // Send ping every 30 seconds
+    // Keep-alive mechanism (Temporarily commented out for debugging)
+    // setInterval(() => {
+    //     socket.emit('ping');
+    // }, 30000); // Send ping every 30 seconds
 
     connections.set(socket.id, { 
         id: socket.id, 
